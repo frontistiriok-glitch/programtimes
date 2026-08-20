@@ -1,0 +1,22 @@
+[build]
+  base = "."
+  command = "npm install --prefix frontend && npm run build --prefix frontend"
+  publish = "frontend/dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+  # Ώστε το esbuild να βρει και να πακετάρει το backend/src, που ζει έξω απο το functions folder.
+  included_files = ["backend/src/**"]
+
+# Οτιδήποτε πάει σε /api/* προωθείται στη Netlify Function "api"
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# SPA fallback: όλα τα υπόλοιπα paths σερβίρουν το index.html (React Router-friendly, αν προστεθεί μελλοντικά)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

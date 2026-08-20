@@ -1,0 +1,14 @@
+{
+  "name": "tutoring-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Root package.json - παρέχει τα dependencies που χρειάζεται η Netlify Function (backend Express app).",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.3.0",
+    "multer": "^1.4.5-lts.1",
+    "serverless-http": "^3.2.0",
+    "xlsx": "^0.18.5"
+  }
+}
