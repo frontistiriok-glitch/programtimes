@@ -5,6 +5,7 @@ import Filters from "./components/Filters.jsx";
 import AssignmentModal from "./components/AssignmentModal.jsx";
 import ExcelButtons from "./components/ExcelButtons.jsx";
 import StudentsPanel from "./components/StudentsPanel.jsx";
+import ManagementPanel from "./components/ManagementPanel.jsx";
 
 const emptyForm = { day: "MONDAY", startTime: "16:00", endTime: "17:30" };
 
@@ -140,6 +141,12 @@ export default function App() {
           >
             Μαθητές ({students.length})
           </button>
+          <button
+            onClick={() => setTab("management")}
+            className={`border-b-2 pb-1 ${tab === "management" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
+          >
+            Διαχείριση
+          </button>
         </div>
       </header>
 
@@ -174,6 +181,13 @@ export default function App() {
             </div>
             <StudentsPanel students={students} classGroups={classGroups} courses={courses} onChanged={refreshAll} />
           </>
+        )}
+
+        {tab === "management" && (
+          <ManagementPanel
+            data={{ courses, teachers, rooms, classgroups: classGroups }}
+            onChanged={refreshAll}
+          />
         )}
       </main>
 
