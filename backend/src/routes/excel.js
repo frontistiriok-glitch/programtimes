@@ -73,7 +73,7 @@ function makeExcelRouter(db) {
         "Μη διαθέσιμες ώρες": (s.unavailableSlots || [])
           .map((slot) => `${keyToGreekDay(slot.day)} ${slot.time}`)
           .join(", "),
-        "Τμήμα": gById[s.classGroupId]?.name || "",
+        "Τμήματα": (s.classGroupIds || []).map((gid) => gById[gid]?.name).filter(Boolean).join(", "),
         "Σημειώσεις": s.notes || "",
       }))
     ), "Students");
@@ -154,12 +154,14 @@ function makeExcelRouter(db) {
       report.inserted["Assignments"] = insertedCount;
     }
 
-    // --- Students: parsing "Μαθήματα" (fuzzy match) + "Μη διαθέσιμες ώρες" (day/time parse) ---
+    // --- Students: parsing "Μαθήματα" (fuzzy match) + "Μη διαθέσιμες ώρες" (day/time parse)
+    //     + "Τμήματα" (πολλαπλά, χωρισμένα με κόμμα, match by name) ---
     const studentSheet = wb.Sheets["Μαθητές"] || wb.Sheets["Students"];
     if (studentSheet) {
       const rows = XLSX.utils.sheet_to_json(studentSheet);
       const courses = await getAll("courses");
-      let inserted = 0, unmatchedTotal = 0;
+      const classGroups = await getAll("classGroups");
+      let inserted = 0, unmatchedTotal = 0, unmatchedClassGroups = 0;
 
       for (const row of rows) {
         const fullName = row["Ονοματεπώνυμο"] || row.fullName;
@@ -171,6 +173,16 @@ function makeExcelRouter(db) {
 
         const unavailableSlots = parseUnavailableSlots(row["Μη διαθέσιμες ώρες"] || row.unavailableSlots || "");
 
+        // Τμήματα: ελεύθερο κείμενο "Α, Β" -> λίστα ονομάτων -> αντιστοίχιση σε classGroupIds (exact name match)
+        const classGroupsText = row["Τμήματα"] || row["Τμήμα"] || row.classGroups || "";
+        const classGroupNames = String(classGroupsText).split(",").map((s) => s.trim()).filter(Boolean);
+        const classGroupIds = [];
+        for (const name of classGroupNames) {
+          const found = classGroups.find((g) => g.name === name);
+          if (found) classGroupIds.push(found.id);
+          else unmatchedClassGroups++;
+        }
+
         const studentData = {
           fullName,
           grade: row["Τάξη"] || row.grade || null,
@@ -181,7 +193,7 @@ function makeExcelRouter(db) {
           unmatchedCourseNames: unmatched,
           unavailableSlots,
           notes: row["Σημειώσεις"] || row.notes || null,
-          classGroupId: null, // η ανάθεση σε Τμήμα γίνεται χειροκίνητα από τον χρήστη
+          classGroupIds, // μπορεί να είναι σε πολλά ταυτόχρονα (π.χ. ["Α","Β"])
         };
 
         await db.collection("students").add(studentData);
@@ -189,6 +201,7 @@ function makeExcelRouter(db) {
       }
       report.inserted["Students"] = inserted;
       report.studentsNeedingReview = unmatchedTotal;
+      if (unmatchedClassGroups > 0) report.classGroupsNotFound = unmatchedClassGroups;
     }
 
     res.json(report);

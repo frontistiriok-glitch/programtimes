@@ -29,7 +29,18 @@ function durationRows(start, end) {
   return Math.round(((h2 * 60 + m2) - (h1 * 60 + m1)) / 30);
 }
 
-export default function WeeklyGrid({ assignments, onCellClick, onCardClick, onDrop }) {
+const FALLBACK_PALETTE = ["#2F6F4E", "#B4472B", "#4C6EF5", "#AE3EC9", "#E8590C", "#0CA678", "#F08C00", "#1971C2"];
+
+function colorForTeacher(teacher) {
+  if (teacher?.color) return teacher.color;
+  if (!teacher?.id) return "#2F6F4E";
+  // Σταθερό fallback χρώμα ανά καθηγητή (deterministic hash) όταν δεν έχει οριστεί χειροκίνητα.
+  let hash = 0;
+  for (const ch of teacher.id) hash = (hash * 31 + ch.charCodeAt(0)) % FALLBACK_PALETTE.length;
+  return FALLBACK_PALETTE[hash];
+}
+
+export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardClick, onDrop }) {
   const handleDragStart = (e, assignment) => {
     e.dataTransfer.setData("assignmentId", String(assignment.id));
   };
@@ -42,8 +53,22 @@ export default function WeeklyGrid({ assignments, onCellClick, onCardClick, onDr
     if (assignmentId) onDrop(assignmentId, day, time);
   };
 
+  const teachersInView = teachers.filter((t) => assignments.some((a) => a.teacherId === t.id));
+
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-white">
+    <div className="space-y-2">
+      {teachersInView.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-white px-3 py-2 text-xs text-slate">
+          <span className="font-medium text-ink">Καθηγητές:</span>
+          {teachersInView.map((t) => (
+            <span key={t.id} className="flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: colorForTeacher(t) }} />
+              {t.fullName}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="overflow-x-auto rounded-lg border border-line bg-white">
       <div
         className="grid min-w-[860px]"
         style={{ gridTemplateColumns: `88px repeat(${DAYS.length}, 1fr)` }}
@@ -87,6 +112,7 @@ export default function WeeklyGrid({ assignments, onCellClick, onCardClick, onDr
           if (dayIndex === -1) return null;
           const rowStart = timeToRow(a.startTime) + 1;
           const rowSpan = durationRows(a.startTime, a.endTime);
+          const teacherColor = colorForTeacher(a.teacher);
           return (
             <div
               key={a.id}
@@ -100,8 +126,8 @@ export default function WeeklyGrid({ assignments, onCellClick, onCardClick, onDr
               style={{
                 gridRow: `${rowStart} / span ${rowSpan}`,
                 gridColumn: dayIndex + 2,
-                backgroundColor: (a.course?.color || "#2F6F4E") + "22",
-                borderColor: a.course?.color || "#2F6F4E",
+                backgroundColor: teacherColor + "22",
+                borderColor: teacherColor,
               }}
             >
               <div className="font-semibold text-ink">{a.course?.title}</div>
@@ -110,6 +136,7 @@ export default function WeeklyGrid({ assignments, onCellClick, onCardClick, onDr
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

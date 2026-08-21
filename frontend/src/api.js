@@ -21,8 +21,8 @@ export const api = {
   create: (entity, data) => request(`/${entity}`, { method: "POST", body: JSON.stringify(data) }),
   update: (entity, id, data) => request(`/${entity}/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   remove: (entity, id) => request(`/${entity}/${id}`, { method: "DELETE" }),
-  assignStudentClass: (studentId, classGroupId) =>
-    request(`/students/${studentId}/assign-class`, { method: "PUT", body: JSON.stringify({ classGroupId }) }),
+  assignStudentClasses: (studentId, classGroupIds) =>
+    request(`/students/${studentId}/assign-classes`, { method: "PUT", body: JSON.stringify({ classGroupIds }) }),
   resolveStudentCourse: (studentId, payload) =>
     request(`/students/${studentId}/resolve-course`, { method: "POST", body: JSON.stringify(payload) }),
   exportExcelUrl: () => `${BASE}/export/excel`,

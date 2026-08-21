@@ -1,6 +1,6 @@
 import React from "react";
 
-export default function Filters({ classGroups, teachers, rooms, filters, setFilters }) {
+export default function Filters({ classGroups, teachers, rooms, students, filters, setFilters }) {
   const Select = ({ label, value, onChange, options }) => (
     <label className="flex flex-col gap-1 text-xs font-medium text-slate">
       {label}
@@ -36,6 +36,12 @@ export default function Filters({ classGroups, teachers, rooms, filters, setFilt
         value={filters.roomId}
         onChange={(v) => setFilters((f) => ({ ...f, roomId: v }))}
         options={rooms.map((r) => ({ id: r.id, label: r.name }))}
+      />
+      <Select
+        label="Μαθητής"
+        value={filters.studentId}
+        onChange={(v) => setFilters((f) => ({ ...f, studentId: v }))}
+        options={students.map((s) => ({ id: s.id, label: s.fullName }))}
       />
     </div>
   );

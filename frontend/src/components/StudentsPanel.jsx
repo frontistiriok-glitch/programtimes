@@ -8,8 +8,8 @@ export default function StudentsPanel({ students, classGroups, courses, onChange
   const classGroupName = (id) => classGroups.find((g) => g.id === id)?.name || "—";
   const courseName = (id) => courses.find((c) => c.id === id)?.title || id;
 
-  const handleAssignClass = async (studentId, classGroupId) => {
-    await api.assignStudentClass(studentId, classGroupId || null);
+  const handleAssignClasses = async (studentId, classGroupIds) => {
+    await api.assignStudentClasses(studentId, classGroupIds);
     onChanged();
   };
 
@@ -40,19 +40,29 @@ export default function StudentsPanel({ students, classGroups, courses, onChange
                 </div>
               </div>
 
-              <label className="flex items-center gap-2 text-xs text-slate">
-                Τμήμα:
-                <select
-                  className="rounded-md border border-line px-2 py-1 text-sm"
-                  value={s.classGroupId || ""}
-                  onChange={(e) => handleAssignClass(s.id, e.target.value)}
-                >
-                  <option value="">Χωρίς ανάθεση</option>
-                  {classGroups.map((g) => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
-                  ))}
-                </select>
-              </label>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate">
+                <span>Τμήματα:</span>
+                {classGroups.map((g) => {
+                  const checked = (s.classGroupIds || []).includes(g.id);
+                  return (
+                    <label key={g.id} className="flex items-center gap-1 rounded-full border border-line px-2 py-1">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const current = s.classGroupIds || [];
+                          const next = e.target.checked
+                            ? [...current, g.id]
+                            : current.filter((id) => id !== g.id);
+                          handleAssignClasses(s.id, next);
+                        }}
+                      />
+                      {g.name}
+                    </label>
+                  );
+                })}
+                {classGroups.length === 0 && <span>Δεν υπάρχουν ακόμα τμήματα.</span>}
+              </div>
 
               <button
                 className="text-xs text-accent underline"

@@ -19,7 +19,7 @@ export default function App() {
   const [assignments, setAssignments] = useState([]);
   const [students, setStudents] = useState([]);
 
-  const [filters, setFilters] = useState({ classGroupId: "", teacherId: "", roomId: "" });
+  const [filters, setFilters] = useState({ classGroupId: "", teacherId: "", roomId: "", studentId: "" });
   const [modalOpen, setModalOpen] = useState(false);
   const [modalForm, setModalForm] = useState(emptyForm);
   const [modalError, setModalError] = useState(null);
@@ -40,13 +40,17 @@ export default function App() {
   useEffect(() => { refreshAll(); }, []);
 
   const filteredAssignments = useMemo(() => {
+    const selectedStudent = filters.studentId ? students.find((s) => s.id === filters.studentId) : null;
+    const studentClassGroupIds = selectedStudent?.classGroupIds || [];
+
     return assignments.filter((a) => {
       if (filters.classGroupId && a.classGroupId !== filters.classGroupId) return false;
       if (filters.teacherId && a.teacherId !== filters.teacherId) return false;
       if (filters.roomId && a.roomId !== filters.roomId) return false;
+      if (filters.studentId && !studentClassGroupIds.includes(a.classGroupId)) return false;
       return true;
     });
-  }, [assignments, filters]);
+  }, [assignments, filters, students]);
 
   const openNewCell = (day, startTime) => {
     setModalError(null);
@@ -161,12 +165,13 @@ export default function App() {
         {tab === "schedule" && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <Filters classGroups={classGroups} teachers={teachers} rooms={rooms} filters={filters} setFilters={setFilters} />
+              <Filters classGroups={classGroups} teachers={teachers} rooms={rooms} students={students} filters={filters} setFilters={setFilters} />
               <ExcelButtons onImported={refreshAll} />
             </div>
 
             <WeeklyGrid
               assignments={filteredAssignments}
+              teachers={teachers}
               onCellClick={openNewCell}
               onCardClick={openExisting}
               onDrop={handleDrop}

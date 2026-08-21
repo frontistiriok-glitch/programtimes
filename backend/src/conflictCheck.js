@@ -78,7 +78,7 @@ function findStudentAvailabilityWarnings(candidate, students) {
   const endMin = toMinutes(candidate.endTime);
 
   for (const student of students) {
-    if (student.classGroupId !== candidate.classGroupId) continue;
+    if (!Array.isArray(student.classGroupIds) || !student.classGroupIds.includes(candidate.classGroupId)) continue;
     const slots = student.unavailableSlots || [];
 
     const clashingSlots = slots.filter((slot) => {

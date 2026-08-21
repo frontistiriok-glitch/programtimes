@@ -21,11 +21,11 @@ function makeStudentRouter(db) {
     res.json({ id: doc.id, ...doc.data() });
   });
 
-  // Χειροκίνητη ανάθεση/αλλαγή Τμήματος (ClassGroup) για έναν μαθητή.
-  // Ξεχωριστό endpoint ώστε το UI να το εμφανίζει ως ρητή ενέργεια, όχι πλευρικό effect του edit.
-  router.put("/:id/assign-class", async (req, res) => {
-    const { classGroupId } = req.body; // null για αποσύνδεση
-    await col.doc(req.params.id).set({ classGroupId: classGroupId || null }, { merge: true });
+  // Χειροκίνητη ανάθεση/αλλαγή Τμημάτων (ClassGroups) για έναν μαθητή.
+  // Ένας μαθητής μπορεί να ανήκει σε ΠΟΛΛΑ τμήματα ταυτόχρονα (π.χ. μ3 στο Α και στο Β).
+  router.put("/:id/assign-classes", async (req, res) => {
+    const { classGroupIds } = req.body; // array από ids, [] για αποσύνδεση απ' όλα
+    await col.doc(req.params.id).set({ classGroupIds: Array.isArray(classGroupIds) ? classGroupIds : [] }, { merge: true });
     const doc = await col.doc(req.params.id).get();
     res.json({ id: doc.id, ...doc.data() });
   });
