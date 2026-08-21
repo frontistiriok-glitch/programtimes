@@ -2,7 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const XLSX = require("xlsx");
 const { findConflicts } = require("../conflictCheck");
-const { matchCoursesFromText } = require("../fuzzyMatch");
+const { matchCoursesFromText, stripAccentsLower } = require("../fuzzyMatch");
 const { parseUnavailableSlots, keyToGreekDay } = require("../dayMapping");
 
 const upload = multer({ storage: multer.memoryStorage() });
@@ -155,13 +155,18 @@ function makeExcelRouter(db) {
     }
 
     // --- Students: parsing "Μαθήματα" (fuzzy match) + "Μη διαθέσιμες ώρες" (day/time parse)
-    //     + "Τμήματα" (πολλαπλά, χωρισμένα με κόμμα, match by name) ---
+    //     + "Τμήματα" (πολλαπλά, χωρισμένα με κόμμα, match by name).
+    //     Dedupe: αν υπάρχει ήδη μαθητής με το ίδιο ονοματεπώνυμο, ΕΝΗΜΕΡΩΝΕΤΑΙ αντί να
+    //     δημιουργείται δεύτερη εγγραφή. ---
     const studentSheet = wb.Sheets["Μαθητές"] || wb.Sheets["Students"];
     if (studentSheet) {
       const rows = XLSX.utils.sheet_to_json(studentSheet);
       const courses = await getAll("courses");
       const classGroups = await getAll("classGroups");
-      let inserted = 0, unmatchedTotal = 0, unmatchedClassGroups = 0;
+      const existingStudents = await getAll("students");
+      const normalize = (s) => stripAccentsLower(String(s || "").trim());
+
+      let inserted = 0, updated = 0, unmatchedTotal = 0, unmatchedClassGroups = 0;
 
       for (const row of rows) {
         const fullName = row["Ονοματεπώνυμο"] || row.fullName;
@@ -173,7 +178,6 @@ function makeExcelRouter(db) {
 
         const unavailableSlots = parseUnavailableSlots(row["Μη διαθέσιμες ώρες"] || row.unavailableSlots || "");
 
-        // Τμήματα: ελεύθερο κείμενο "Α, Β" -> λίστα ονομάτων -> αντιστοίχιση σε classGroupIds (exact name match)
         const classGroupsText = row["Τμήματα"] || row["Τμήμα"] || row.classGroups || "";
         const classGroupNames = String(classGroupsText).split(",").map((s) => s.trim()).filter(Boolean);
         const classGroupIds = [];
@@ -193,13 +197,25 @@ function makeExcelRouter(db) {
           unmatchedCourseNames: unmatched,
           unavailableSlots,
           notes: row["Σημειώσεις"] || row.notes || null,
-          classGroupIds, // μπορεί να είναι σε πολλά ταυτόχρονα (π.χ. ["Α","Β"])
+          classGroupIds,
         };
 
-        await db.collection("students").add(studentData);
-        inserted++;
+        const existing = existingStudents.find((s) => normalize(s.fullName) === normalize(fullName));
+        if (existing) {
+          // Ενημέρωση: κρατάμε τυχόν ήδη χειροκίνητα ανατεθειμένα Τμήματα αν το νέο import δεν όρισε κανένα.
+          const mergedClassGroupIds = classGroupIds.length > 0 ? classGroupIds : (existing.classGroupIds || []);
+          await db.collection("students").doc(existing.id).set(
+            { ...studentData, classGroupIds: mergedClassGroupIds },
+            { merge: true }
+          );
+          updated++;
+        } else {
+          await db.collection("students").add(studentData);
+          inserted++;
+        }
       }
       report.inserted["Students"] = inserted;
+      report.updated["Students"] = updated;
       report.studentsNeedingReview = unmatchedTotal;
       if (unmatchedClassGroups > 0) report.classGroupsNotFound = unmatchedClassGroups;
     }
