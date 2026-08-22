@@ -116,13 +116,22 @@ function makeExcelRouter(db) {
     await upsertSheet("Teachers", "teachers", (r) => ({ fullName: r.fullName, specialty: r.specialty || null }));
     await upsertSheet("Rooms", "rooms", (r) => ({ name: r.name, capacity: Number(r.capacity) || null }));
 
-    // --- Assignments: resolve ονόματα -> id, ΚΑΙ hard conflict-check ---
+    // --- Assignments: ΠΛΗΡΗΣ ΑΝΤΙΚΑΤΑΣΤΑΣΗ. Το ωρολόγιο πρόγραμμα (Assignments) δεν κάνει
+    //     merge/upsert σαν τις άλλες οντότητες: όταν το αρχείο περιέχει sheet "Assignments",
+    //     ΟΛΕΣ οι υπάρχουσες αναθέσεις διαγράφονται πρώτα, και μετά μπαίνουν από την αρχή
+    //     όσες περιγράφει το sheet. Έτσι το import αντικατοπτρίζει ακριβώς το αρχείο, χωρίς
+    //     να αφήνει πίσω παλιές ώρες που τυχόν αφαιρέθηκαν από το Excel.
     const assignSheet = wb.Sheets["Assignments"];
     if (assignSheet) {
+      const oldAssignmentsSnap = await db.collection("assignments").get();
+      await Promise.all(oldAssignmentsSnap.docs.map((d) => d.ref.delete()));
+      report.deleted = { Assignments: oldAssignmentsSnap.size };
+
       const rows = XLSX.utils.sheet_to_json(assignSheet);
-      const [courses, classGroups, teachers, rooms, existingAssignments] = await Promise.all([
-        getAll("courses"), getAll("classGroups"), getAll("teachers"), getAll("rooms"), getAll("assignments"),
+      const [courses, classGroups, teachers, rooms] = await Promise.all([
+        getAll("courses"), getAll("classGroups"), getAll("teachers"), getAll("rooms"),
       ]);
+      const existingAssignments = []; // ξεκινάει άδειο αφού μόλις διαγράψαμε τα πάντα
       const findByName = (list, key, name) => list.find((x) => x[key] === name);
       let insertedCount = 0;
 
