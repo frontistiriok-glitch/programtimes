@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { api } from "../api";
 import { keyToGreekDay } from "../dayLabels";
+import ClassGroupPicker from "./ClassGroupPicker.jsx";
 
 const emptyStudentForm = { fullName: "", grade: "", parentName: "", phone: "", email: "", notes: "" };
 
@@ -107,29 +108,11 @@ export default function StudentsPanel({ students, classGroups, courses, onChange
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate">
-                <span className="font-medium text-ink">Δυνατά τμήματα (τσέκαρε για ανάθεση):</span>
-                {classGroups.map((g) => {
-                  const checked = (s.classGroupIds || []).includes(g.id);
-                  return (
-                    <label key={g.id} className="flex items-center gap-1 rounded-full border border-line px-2 py-1">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          const current = s.classGroupIds || [];
-                          const next = e.target.checked
-                            ? [...current, g.id]
-                            : current.filter((id) => id !== g.id);
-                          handleAssignClasses(s.id, next);
-                        }}
-                      />
-                      {g.name}
-                    </label>
-                  );
-                })}
-                {classGroups.length === 0 && <span>Δεν υπάρχουν ακόμα τμήματα.</span>}
-              </div>
+              <ClassGroupPicker
+                classGroups={classGroups}
+                assignedIds={s.classGroupIds || []}
+                onChange={(next) => handleAssignClasses(s.id, next)}
+              />
 
               <button
                 className="text-xs text-accent underline"

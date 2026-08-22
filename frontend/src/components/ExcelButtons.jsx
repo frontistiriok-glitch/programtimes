@@ -8,6 +8,10 @@ export default function ExcelButtons({ onImported }) {
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!confirm("Προσοχή: αν το αρχείο περιέχει sheet \"Assignments\", ΟΛΟ το τρέχον ωρολόγιο πρόγραμμα θα διαγραφεί και θα αντικατασταθεί από τις ώρες του αρχείου. Συνέχεια;")) {
+      e.target.value = "";
+      return;
+    }
     const result = await api.importExcel(file);
     setReport(result);
     onImported();
@@ -34,6 +38,9 @@ export default function ExcelButtons({ onImported }) {
         <div className="text-xs text-slate">
           Εισήχθησαν: {Object.values(report.inserted || {}).reduce((a, b) => a + b, 0)} ·
           Απορρίφθηκαν: {report.rejected?.length || 0}
+          {report.deleted?.Assignments > 0 && (
+            <> · Διαγράφηκαν {report.deleted.Assignments} παλιές αναθέσεις προγράμματος</>
+          )}
           {report.studentsNeedingReview > 0 && (
             <> · <span className="text-warn">{report.studentsNeedingReview} μαθήματα μαθητών χρειάζονται χειροκίνητη επιβεβαίωση (καρτέλα Μαθητές)</span></>
           )}
