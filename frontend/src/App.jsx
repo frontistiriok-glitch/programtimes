@@ -6,6 +6,7 @@ import AssignmentModal from "./components/AssignmentModal.jsx";
 import ExcelButtons from "./components/ExcelButtons.jsx";
 import StudentsPanel from "./components/StudentsPanel.jsx";
 import ManagementPanel from "./components/ManagementPanel.jsx";
+import PrintPreviewModal from "./components/PrintPreviewModal.jsx";
 
 const emptyForm = { day: "MONDAY", startTime: "16:00", endTime: "17:30" };
 
@@ -24,6 +25,7 @@ export default function App() {
   const [modalForm, setModalForm] = useState(emptyForm);
   const [modalError, setModalError] = useState(null);
   const [warningBanner, setWarningBanner] = useState(null);
+  const [printOpen, setPrintOpen] = useState(false);
 
   async function refreshAll() {
     const [c, g, t, r, a, s] = await Promise.all([
@@ -166,7 +168,15 @@ export default function App() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <Filters classGroups={classGroups} teachers={teachers} rooms={rooms} students={students} filters={filters} setFilters={setFilters} />
-              <ExcelButtons onImported={refreshAll} />
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={() => setPrintOpen(true)}
+                  className="rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-ink hover:bg-paper"
+                >
+                  Εκτύπωση προγράμματος
+                </button>
+                <ExcelButtons onImported={refreshAll} />
+              </div>
             </div>
 
             <WeeklyGrid
@@ -207,6 +217,15 @@ export default function App() {
         onSave={handleSave}
         onDelete={handleDelete}
         onClose={() => setModalOpen(false)}
+      />
+
+      <PrintPreviewModal
+        open={printOpen}
+        onClose={() => setPrintOpen(false)}
+        assignments={assignments}
+        teachers={teachers}
+        classGroups={classGroups}
+        students={students}
       />
     </div>
   );
