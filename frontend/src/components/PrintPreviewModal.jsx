@@ -22,6 +22,10 @@ function toMinutes(t) {
   return h * 60 + m;
 }
 
+const GRID_START_MINUTES = 14 * 60; // 14:00
+const SLOT_MINUTES = 30;
+const SLOT_COUNT = 17; // 14:00 έως 22:00 σε μισές ώρες
+
 export default function PrintPreviewModal({ open, onClose, assignments, teachers, classGroups, students }) {
   const [scopeType, setScopeType] = useState("teacher");
   const [scopeId, setScopeId] = useState("");
@@ -36,6 +40,12 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
   }, [scopeType, teachers, classGroups, students]);
 
   const scopeName = scopeOptions.find((o) => o.id === scopeId)?.label || "";
+
+  // Όταν το scope είναι Τμήμα, δείχνουμε και τη λίστα μαθητών που ανήκουν σε αυτό.
+  const classGroupStudents = useMemo(() => {
+    if (scopeType !== "classgroup" || !scopeId) return [];
+    return students.filter((s) => (s.classGroupIds || []).includes(scopeId));
+  }, [scopeType, scopeId, students]);
 
   const filteredAssignments = useMemo(() => {
     if (!scopeId) return [];
@@ -176,6 +186,15 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
               </div>
             )}
 
+            {scopeId && scopeType === "classgroup" && (
+              <div className="mb-4 rounded-md border border-line bg-paper/50 p-2 text-sm">
+                <span className="font-medium text-ink">Μαθητές τμήματος: </span>
+                {classGroupStudents.length > 0
+                  ? classGroupStudents.map((s) => s.fullName).join(", ")
+                  : "— κανένας μαθητής ανατεθειμένος ακόμα —"}
+              </div>
+            )}
+
             {scopeId && format === "list" && (
               <table className="w-full border-collapse text-sm">
                 <thead>
@@ -217,17 +236,52 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
 }
 
 // Ελαφριά, καθαρά τυπωμένη εκδοχή του εβδομαδιαίου πλέγματος (χωρίς drag&drop/interactivity -
-// άχρηστα σε χαρτί) ειδικά για το preview/εκτύπωση.
+// άχρηστα σε χαρτί) ειδικά για το preview/εκτύπωση. Κάθε ανάθεση "πιάνει" τόσες γραμμές
+// (μισές ώρες) όση είναι η πραγματική διάρκειά της, μέσω HTML rowSpan.
 function SimplePrintGrid({ assignments }) {
-  const HOURS = Array.from({ length: 17 }, (_, i) => {
-    const total = 14 * 60 + i * 30;
+  const HOURS = Array.from({ length: SLOT_COUNT }, (_, i) => {
+    const total = GRID_START_MINUTES + i * SLOT_MINUTES;
     const h = String(Math.floor(total / 60)).padStart(2, "0");
     const m = String(total % 60).padStart(2, "0");
     return `${h}:${m}`;
   });
 
-  const cellContent = (dayKey, time) =>
-    assignments.filter((a) => a.day === dayKey && a.startTime === time);
+  function slotIndexOf(time) {
+    return Math.round((toMinutes(time) - GRID_START_MINUTES) / SLOT_MINUTES);
+  }
+
+  function slotSpanOf(a) {
+    const span = Math.round((toMinutes(a.endTime) - toMinutes(a.startTime)) / SLOT_MINUTES);
+    return Math.max(1, span);
+  }
+
+  // Για κάθε ημέρα, φτιάχνει έναν χάρτη slotIndex -> "covered" (καλύπτεται από rowSpan
+  // προηγούμενης γραμμής, δεν σχεδιάζεται <td>) ή { items, span } (εδώ ξεκινάει το κελί).
+  // Ταυτόχρονες αναθέσεις με ΑΚΡΙΒΩΣ την ίδια ώρα έναρξης εμφανίζονται μαζί στο ίδιο κελί.
+  const layoutByDay = useMemo(() => {
+    const result = {};
+    for (const day of DAYS) {
+      const dayAssignments = assignments.filter((a) => a.day === day.key);
+      const cellMap = {};
+      const byStartIndex = {};
+      for (const a of dayAssignments) {
+        const idx = slotIndexOf(a.startTime);
+        if (idx < 0 || idx >= SLOT_COUNT) continue;
+        (byStartIndex[idx] = byStartIndex[idx] || []).push(a);
+      }
+      for (const idxStr of Object.keys(byStartIndex)) {
+        const idx = Number(idxStr);
+        if (cellMap[idx] === "covered") continue;
+        const items = byStartIndex[idx];
+        const span = Math.min(Math.max(...items.map(slotSpanOf)), SLOT_COUNT - idx);
+        cellMap[idx] = { items, span };
+        for (let k = idx + 1; k < idx + span; k++) cellMap[k] = "covered";
+      }
+      result[day.key] = cellMap;
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignments]);
 
   return (
     <table className="w-full border-collapse text-[11px]">
@@ -242,22 +296,26 @@ function SimplePrintGrid({ assignments }) {
         </tr>
       </thead>
       <tbody>
-        {HOURS.map((time) => (
+        {HOURS.map((time, rowIdx) => (
           <tr key={time}>
             <td className="border border-line p-1 text-right text-slate">{time}</td>
             {DAYS.map((d) => {
-              const items = cellContent(d.key, time);
-              return (
-                <td key={d.key + time} className="border border-line p-1 align-top">
-                  {items.map((a) => (
-                    <div key={a.id} className="mb-1 rounded border border-ink/30 bg-paper/60 p-1">
-                      <div className="font-semibold">{a.course?.title}</div>
-                      <div>{a.classGroup?.name} · {a.teacher?.fullName}</div>
-                      <div>{a.room?.name}</div>
-                    </div>
-                  ))}
-                </td>
-              );
+              const cell = layoutByDay[d.key][rowIdx];
+              if (cell === "covered") return null; // καλύπτεται ήδη από rowSpan παραπάνω
+              if (cell && cell.items) {
+                return (
+                  <td key={d.key + time} rowSpan={cell.span} className="border border-line p-1 align-top">
+                    {cell.items.map((a) => (
+                      <div key={a.id} className="mb-1 rounded border border-ink/30 bg-paper/60 p-1">
+                        <div className="font-semibold">{a.course?.title}</div>
+                        <div>{a.classGroup?.name} · {a.teacher?.fullName}</div>
+                        <div>{a.room?.name}</div>
+                      </div>
+                    ))}
+                  </td>
+                );
+              }
+              return <td key={d.key + time} className="border border-line p-1 align-top" />;
             })}
           </tr>
         ))}
