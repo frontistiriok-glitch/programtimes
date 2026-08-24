@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { auth } from "./firebaseClient";
 import { api } from "./api";
+import Login from "./components/Login.jsx";
 import WeeklyGrid from "./components/WeeklyGrid.jsx";
 import Filters from "./components/Filters.jsx";
 import AssignmentModal from "./components/AssignmentModal.jsx";
@@ -10,7 +13,26 @@ import PrintPreviewModal from "./components/PrintPreviewModal.jsx";
 
 const emptyForm = { day: "MONDAY", startTime: "16:00", endTime: "17:30" };
 
+// Root export: "φράχτης" σύνδεσης. Όσο δεν υπάρχει συνδεδεμένος χρήστης (Firebase Auth),
+// δείχνει το Login. Μόλις συνδεθεί, φορτώνει την πραγματική εφαρμογή (AppContent).
 export default function App() {
+  const [user, setUser] = useState(undefined); // undefined = ελέγχεται ακόμα, null = μη συνδεδεμένος
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+    return unsubscribe;
+  }, []);
+
+  if (user === undefined) {
+    return <div className="flex min-h-screen items-center justify-center bg-paper text-slate">Φόρτωση...</div>;
+  }
+  if (!user) {
+    return <Login />;
+  }
+  return <AppContent userEmail={user.email} />;
+}
+
+function AppContent({ userEmail }) {
   const [tab, setTab] = useState("schedule"); // "schedule" | "students"
 
   const [courses, setCourses] = useState([]);
@@ -132,26 +154,34 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-paper">
-      <header className="border-b border-line bg-white px-6 py-4">
-        <h1 className="font-display text-xl font-semibold text-ink">Πρόγραμμα Φροντιστηρίου</h1>
-        <div className="mt-3 flex gap-4 text-sm">
-          <button
-            onClick={() => setTab("schedule")}
-            className={`border-b-2 pb-1 ${tab === "schedule" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
-          >
-            Πρόγραμμα
-          </button>
-          <button
-            onClick={() => setTab("students")}
-            className={`border-b-2 pb-1 ${tab === "students" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
-          >
-            Μαθητές ({students.length})
-          </button>
-          <button
-            onClick={() => setTab("management")}
-            className={`border-b-2 pb-1 ${tab === "management" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
-          >
-            Διαχείριση
+      <header className="flex items-start justify-between border-b border-line bg-white px-6 py-4">
+        <div>
+          <h1 className="font-display text-xl font-semibold text-ink">Πρόγραμμα Φροντιστηρίου</h1>
+          <div className="mt-3 flex gap-4 text-sm">
+            <button
+              onClick={() => setTab("schedule")}
+              className={`border-b-2 pb-1 ${tab === "schedule" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
+            >
+              Πρόγραμμα
+            </button>
+            <button
+              onClick={() => setTab("students")}
+              className={`border-b-2 pb-1 ${tab === "students" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
+            >
+              Μαθητές ({students.length})
+            </button>
+            <button
+              onClick={() => setTab("management")}
+              className={`border-b-2 pb-1 ${tab === "management" ? "border-accent font-semibold text-accent" : "border-transparent text-slate"}`}
+            >
+              Διαχείριση
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-slate">
+          <span>{userEmail}</span>
+          <button onClick={() => signOut(auth)} className="rounded-md border border-line px-2 py-1 hover:bg-paper">
+            Αποσύνδεση
           </button>
         </div>
       </header>
