@@ -7,6 +7,56 @@ const { parseUnavailableSlots, keyToGreekDay } = require("../dayMapping");
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+function normalizeKey(s) {
+  return stripAccentsLower(String(s || "").trim());
+}
+
+// Επιστρέφει την πρώτη μη-κενή τιμή ενός row για μια λίστα πιθανών ονομάτων στήλης
+// (π.χ. ελληνικό header ή αγγλικό fallback).
+function pick(row, keys) {
+  for (const k of keys) {
+    if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== "") return row[k];
+  }
+  return undefined;
+}
+
+// Εντοπίζει ονόματα που εμφανίζονται ΠΑΝΩ ΑΠΟ ΜΙΑ ΦΟΡΑ μέσα στο ίδιο sheet του αρχείου
+// (π.χ. δύο γραμμές και οι δύο με Τμήμα "Α", ή δύο γραμμές με τον ίδιο μαθητή).
+function findDuplicateGroups(rows, nameKeys) {
+  const groups = {};
+  rows.forEach((row, index) => {
+    const name = pick(row, nameKeys);
+    if (!name) return;
+    const key = normalizeKey(name);
+    (groups[key] = groups[key] || []).push({ index, row, name });
+  });
+  return Object.entries(groups)
+    .filter(([, arr]) => arr.length > 1)
+    .map(([key, arr]) => ({ key, name: arr[0].name, candidates: arr.map(({ index, row }) => ({ index, ...row })) }));
+}
+
+// Μειώνει τη λίστα rows σε ΜΙΑ γραμμή ανά όνομα, με βάση τις επιλογές (resolutions) που
+// έστειλε ο χρήστης από το UI ({ [normalizedKey]: chosenIndex }). Αν δεν υπάρχει ρητή
+// επιλογή για ένα διπλότυπο, κρατάει προεπιλογή την ΠΡΩΤΗ εμφάνιση.
+function resolveDuplicateRows(rows, nameKeys, resolutions = {}) {
+  const groups = {};
+  const noNameRows = [];
+  rows.forEach((row, index) => {
+    const name = pick(row, nameKeys);
+    if (!name) { noNameRows.push(row); return; }
+    const key = normalizeKey(name);
+    (groups[key] = groups[key] || []).push({ index, row });
+  });
+  const result = [...noNameRows];
+  for (const [key, arr] of Object.entries(groups)) {
+    if (arr.length === 1) { result.push(arr[0].row); continue; }
+    const chosenIndex = resolutions[key];
+    const chosen = arr.find((r) => r.index === chosenIndex) || arr[0];
+    result.push(chosen.row);
+  }
+  return result;
+}
+
 function makeExcelRouter(db) {
   const router = express.Router();
 
@@ -60,7 +110,6 @@ function makeExcelRouter(db) {
       }))
     ), "Assignments");
 
-    // Μαθητές: αναπαράγει τη μορφή της φόρμας δήλωσης γονέων
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
       students.map((s) => ({
         id: s.id,
@@ -84,26 +133,65 @@ function makeExcelRouter(db) {
     res.send(buffer);
   });
 
-  // ---------- IMPORT ----------
-  router.post("/import/excel", upload.single("file"), async (req, res) => {
+  // ---------- ANALYZE (βήμα 1: μόνο ανάγνωση, καμία εγγραφή) ----------
+  // Ελέγχει αν υπάρχουν διπλότυπα ΜΕΣΑ στο ίδιο αρχείο (ίδιο όνομα Τμήματος ή Μαθητή σε
+  // παραπάνω από μία γραμμή) και επιστρέφει λίστα για να διαλέξει ο χρήστης ποια κρατάει.
+  router.post("/import/excel/analyze", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "Δεν εστάλη αρχείο." });
+    const wb = XLSX.read(req.file.buffer, { type: "buffer" });
+
+    const classGroupsSheet = wb.Sheets["ClassGroups"];
+    const studentSheet = wb.Sheets["Μαθητές"] || wb.Sheets["Students"];
+
+    const classGroupRows = classGroupsSheet ? XLSX.utils.sheet_to_json(classGroupsSheet) : [];
+    const studentRows = studentSheet ? XLSX.utils.sheet_to_json(studentSheet) : [];
+
+    res.json({
+      hasClassGroupsSheet: !!classGroupsSheet,
+      hasStudentsSheet: !!studentSheet,
+      hasAssignmentsSheet: !!wb.Sheets["Assignments"],
+      classGroupDuplicates: findDuplicateGroups(classGroupRows, ["name"]),
+      studentDuplicates: findDuplicateGroups(studentRows, ["Ονοματεπώνυμο", "fullName"]),
+    });
+  });
+
+  // ---------- COMMIT (βήμα 2: πραγματική εισαγωγή, με τις επιλογές duplicate-resolution) ----------
+  router.post("/import/excel/commit", upload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "Δεν εστάλη αρχείο." });
+
+    let resolutions = { classGroups: {}, students: {} };
+    if (req.body.resolutions) {
+      try { resolutions = JSON.parse(req.body.resolutions); } catch { /* αγνόησε, χρησιμοποίησε defaults */ }
+    }
 
     const wb = XLSX.read(req.file.buffer, { type: "buffer" });
     const report = { inserted: {}, updated: {}, rejected: [] };
 
-    async function upsertSheet(sheetName, collectionName, mapRow) {
+    // Γενικό upsert για απλές οντότητες: ΤΩΡΑ ελέγχει και ταίριασμα με ΥΠΑΡΧΟΝ όνομα στη
+    // βάση (όχι μόνο row.id), ώστε επαναλαμβανόμενα imports να ΜΗΝ δημιουργούν διπλότυπα.
+    async function upsertSheet(sheetName, collectionName, nameField, mapRow, dedupResolutions) {
       const sheet = wb.Sheets[sheetName];
       if (!sheet) return;
-      const rows = XLSX.utils.sheet_to_json(sheet);
+      const rawRows = XLSX.utils.sheet_to_json(sheet);
+      const rows = dedupResolutions
+        ? resolveDuplicateRows(rawRows, [nameField], dedupResolutions)
+        : rawRows;
+
+      const existing = await getAll(collectionName);
+      const existingByName = new Map(existing.map((e) => [normalizeKey(e[nameField]), e.id]));
+
       let inserted = 0, updated = 0;
       const col = db.collection(collectionName);
       for (const row of rows) {
         const data = mapRow(row);
-        if (row.id) {
-          await col.doc(String(row.id)).set(data, { merge: true });
+        const nameVal = row[nameField];
+        const existingId = row.id ? String(row.id) : (nameVal ? existingByName.get(normalizeKey(nameVal)) : undefined);
+        if (existingId) {
+          await col.doc(existingId).set(data, { merge: true });
           updated++;
         } else {
-          await col.add(data);
+          const ref = await col.add(data);
+          if (nameVal) existingByName.set(normalizeKey(nameVal), ref.id); // ώστε επόμενη γραμμή με ίδιο όνομα να μην ξαναδημιουργήσει
           inserted++;
         }
       }
@@ -111,16 +199,12 @@ function makeExcelRouter(db) {
       report.updated[sheetName] = updated;
     }
 
-    await upsertSheet("Courses", "courses", (r) => ({ title: r.title, category: r.category || null }));
-    await upsertSheet("ClassGroups", "classGroups", (r) => ({ name: r.name, grade: r.grade || null }));
-    await upsertSheet("Teachers", "teachers", (r) => ({ fullName: r.fullName, specialty: r.specialty || null }));
-    await upsertSheet("Rooms", "rooms", (r) => ({ name: r.name, capacity: Number(r.capacity) || null }));
+    await upsertSheet("Courses", "courses", "title", (r) => ({ title: r.title, category: r.category || null }));
+    await upsertSheet("ClassGroups", "classGroups", "name", (r) => ({ name: r.name, grade: r.grade || null }), resolutions.classGroups);
+    await upsertSheet("Teachers", "teachers", "fullName", (r) => ({ fullName: r.fullName, specialty: r.specialty || null }));
+    await upsertSheet("Rooms", "rooms", "name", (r) => ({ name: r.name, capacity: Number(r.capacity) || null }));
 
-    // --- Assignments: ΠΛΗΡΗΣ ΑΝΤΙΚΑΤΑΣΤΑΣΗ. Το ωρολόγιο πρόγραμμα (Assignments) δεν κάνει
-    //     merge/upsert σαν τις άλλες οντότητες: όταν το αρχείο περιέχει sheet "Assignments",
-    //     ΟΛΕΣ οι υπάρχουσες αναθέσεις διαγράφονται πρώτα, και μετά μπαίνουν από την αρχή
-    //     όσες περιγράφει το sheet. Έτσι το import αντικατοπτρίζει ακριβώς το αρχείο, χωρίς
-    //     να αφήνει πίσω παλιές ώρες που τυχόν αφαιρέθηκαν από το Excel.
+    // --- Assignments: ΠΛΗΡΗΣ ΑΝΤΙΚΑΤΑΣΤΑΣΗ ---
     const assignSheet = wb.Sheets["Assignments"];
     if (assignSheet) {
       const oldAssignmentsSnap = await db.collection("assignments").get();
@@ -131,7 +215,7 @@ function makeExcelRouter(db) {
       const [courses, classGroups, teachers, rooms] = await Promise.all([
         getAll("courses"), getAll("classGroups"), getAll("teachers"), getAll("rooms"),
       ]);
-      const existingAssignments = []; // ξεκινάει άδειο αφού μόλις διαγράψαμε τα πάντα
+      const existingAssignments = [];
       const findByName = (list, key, name) => list.find((x) => x[key] === name);
       let insertedCount = 0;
 
@@ -163,17 +247,15 @@ function makeExcelRouter(db) {
       report.inserted["Assignments"] = insertedCount;
     }
 
-    // --- Students: parsing "Μαθήματα" (fuzzy match) + "Μη διαθέσιμες ώρες" (day/time parse)
-    //     + "Τμήματα" (πολλαπλά, χωρισμένα με κόμμα, match by name).
-    //     Dedupe: αν υπάρχει ήδη μαθητής με το ίδιο ονοματεπώνυμο, ΕΝΗΜΕΡΩΝΕΤΑΙ αντί να
-    //     δημιουργείται δεύτερη εγγραφή. ---
+    // --- Students ---
     const studentSheet = wb.Sheets["Μαθητές"] || wb.Sheets["Students"];
     if (studentSheet) {
-      const rows = XLSX.utils.sheet_to_json(studentSheet);
+      const rawRows = XLSX.utils.sheet_to_json(studentSheet);
+      const rows = resolveDuplicateRows(rawRows, ["Ονοματεπώνυμο", "fullName"], resolutions.students);
+
       const courses = await getAll("courses");
       const classGroups = await getAll("classGroups");
       const existingStudents = await getAll("students");
-      const normalize = (s) => stripAccentsLower(String(s || "").trim());
 
       let inserted = 0, updated = 0, unmatchedTotal = 0, unmatchedClassGroups = 0;
 
@@ -209,9 +291,8 @@ function makeExcelRouter(db) {
           classGroupIds,
         };
 
-        const existing = existingStudents.find((s) => normalize(s.fullName) === normalize(fullName));
+        const existing = existingStudents.find((s) => normalizeKey(s.fullName) === normalizeKey(fullName));
         if (existing) {
-          // Ενημέρωση: κρατάμε τυχόν ήδη χειροκίνητα ανατεθειμένα Τμήματα αν το νέο import δεν όρισε κανένα.
           const mergedClassGroupIds = classGroupIds.length > 0 ? classGroupIds : (existing.classGroupIds || []);
           await db.collection("students").doc(existing.id).set(
             { ...studentData, classGroupIds: mergedClassGroupIds },
