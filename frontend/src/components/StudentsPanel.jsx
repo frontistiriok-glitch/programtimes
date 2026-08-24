@@ -1,14 +1,33 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { api } from "../api";
 import { keyToGreekDay } from "../dayLabels";
 import ClassGroupPicker from "./ClassGroupPicker.jsx";
 
 const emptyStudentForm = { fullName: "", grade: "", parentName: "", phone: "", email: "", notes: "" };
 
+const SORT_OPTIONS = [
+  { key: "fullName", label: "Ονοματεπώνυμο" },
+  { key: "grade", label: "Τάξη" },
+  { key: "parentName", label: "Γονέας/Κηδεμόνας" },
+];
+
 export default function StudentsPanel({ students, classGroups, courses, onChanged }) {
   const [expandedId, setExpandedId] = useState(null);
   const [addForm, setAddForm] = useState(emptyStudentForm);
   const [addError, setAddError] = useState(null);
+  const [sortKey, setSortKey] = useState("fullName");
+  const [sortDir, setSortDir] = useState("asc");
+
+  const sortedStudents = useMemo(() => {
+    const copy = [...students];
+    copy.sort((a, b) => {
+      const av = a[sortKey] || "";
+      const bv = b[sortKey] || "";
+      const cmp = String(av).localeCompare(String(bv), "el");
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [students, sortKey, sortDir]);
 
   const setField = (key) => (e) => setAddForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -97,8 +116,22 @@ export default function StudentsPanel({ students, classGroups, courses, onChange
         {addError && <span className="text-xs text-warn">{addError}</span>}
       </form>
 
+      <div className="flex items-center gap-2 border-b border-line bg-paper/30 px-4 py-2 text-xs text-slate">
+        <span>Ταξινόμηση:</span>
+        <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className="rounded-md border border-line px-2 py-1">
+          {SORT_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+        </select>
+        <button
+          onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+          className="rounded-md border border-line px-2 py-1"
+          title="Αντιστροφή σειράς"
+        >
+          {sortDir === "asc" ? "Α → Ω" : "Ω → Α"}
+        </button>
+      </div>
+
       <div className="divide-y divide-line">
-        {students.map((s) => (
+        {sortedStudents.map((s) => (
           <div key={s.id} className="px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { api } from "../api";
 
 /**
@@ -11,6 +11,24 @@ export default function EntityManager({ entityEndpoint, title, items, fields, on
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState(null);
+  const [sortKey, setSortKey] = useState(fields[0]?.key || "");
+  const [sortDir, setSortDir] = useState("asc");
+
+  const sortableFields = fields.filter((f) => f.type !== "color");
+
+  const sortedItems = useMemo(() => {
+    if (!sortKey) return items;
+    const copy = [...items];
+    copy.sort((a, b) => {
+      const av = a[sortKey] ?? "";
+      const bv = b[sortKey] ?? "";
+      const cmp = typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv), "el");
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [items, sortKey, sortDir]);
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -91,8 +109,28 @@ export default function EntityManager({ entityEndpoint, title, items, fields, on
         {error && <span className="text-xs text-warn">{error}</span>}
       </form>
 
+      <div className="flex items-center gap-2 border-b border-line bg-paper/30 px-4 py-2 text-xs text-slate">
+        <span>Ταξινόμηση:</span>
+        <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value)}
+          className="rounded-md border border-line px-2 py-1"
+        >
+          {sortableFields.map((f) => (
+            <option key={f.key} value={f.key}>{f.label}</option>
+          ))}
+        </select>
+        <button
+          onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+          className="rounded-md border border-line px-2 py-1"
+          title="Αντιστροφή σειράς"
+        >
+          {sortDir === "asc" ? "Α → Ω" : "Ω → Α"}
+        </button>
+      </div>
+
       <div className="divide-y divide-line">
-        {items.map((item) => (
+        {sortedItems.map((item) => (
           <div key={item.id} className="flex items-center justify-between px-4 py-2 text-sm">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-ink">
               {fields.map((f) => (
