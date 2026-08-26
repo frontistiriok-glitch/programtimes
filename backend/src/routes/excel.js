@@ -20,8 +20,7 @@ function pick(row, keys) {
   return undefined;
 }
 
-// Εντοπίζει ονόματα που εμφανίζονται ΠΑΝΩ ΑΠΟ ΜΙΑ ΦΟΡΑ μέσα στο ίδιο sheet του αρχείου
-// (π.χ. δύο γραμμές και οι δύο με Τμήμα "Α", ή δύο γραμμές με τον ίδιο μαθητή).
+// Εντοπίζει ονόματα που εμφανίζονται ΠΑΝΩ ΑΠΟ ΜΙΑ ΦΟΡΑ μέσα στο ίδιο sheet του αρχείου.
 function findDuplicateGroups(rows, nameKeys) {
   const groups = {};
   rows.forEach((row, index) => {
@@ -35,9 +34,7 @@ function findDuplicateGroups(rows, nameKeys) {
     .map(([key, arr]) => ({ key, name: arr[0].name, candidates: arr.map(({ index, row }) => ({ index, ...row })) }));
 }
 
-// Μειώνει τη λίστα rows σε ΜΙΑ γραμμή ανά όνομα, με βάση τις επιλογές (resolutions) που
-// έστειλε ο χρήστης από το UI ({ [normalizedKey]: chosenIndex }). Αν δεν υπάρχει ρητή
-// επιλογή για ένα διπλότυπο, κρατάει προεπιλογή την ΠΡΩΤΗ εμφάνιση.
+// Μειώνει τη λίστα rows σε ΜΙΑ γραμμή ανά όνομα, με βάση τις επιλογές του χρήστη.
 function resolveDuplicateRows(rows, nameKeys, resolutions = {}) {
   const groups = {};
   const noNameRows = [];
@@ -55,6 +52,25 @@ function resolveDuplicateRows(rows, nameKeys, resolutions = {}) {
     result.push(chosen.row);
   }
   return result;
+}
+
+// Στέλνει μια λίστα write-operations (set/delete) στο Firestore μέσω batch(es).
+// - ΚΑΘΕ chunk (έως 450 operations, με ασφάλεια κάτω από το όριο 500 του Firestore) είναι
+//   ατομικό: είτε περνάνε ΟΛΕΣ οι αλλαγές του chunk, είτε ΚΑΜΙΑ.
+// - Ένα batch.commit() είναι ΕΝΑ αίτημα δικτύου για έως 450 αλλαγές, αντί για εκατοντάδες
+//   ξεχωριστά αιτήματα -- αυτό λύνει και το πρόβλημα ταχύτητας (timeout σε serverless function
+//   όταν το αρχείο είναι μεγάλο).
+async function commitWritesInChunks(db, writes) {
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < writes.length; i += CHUNK_SIZE) {
+    const chunk = writes.slice(i, i + CHUNK_SIZE);
+    const batch = db.batch();
+    for (const w of chunk) {
+      if (w.type === "delete") batch.delete(w.ref);
+      else batch.set(w.ref, w.data, w.options || {});
+    }
+    await batch.commit();
+  }
 }
 
 function makeExcelRouter(db) {
@@ -134,8 +150,6 @@ function makeExcelRouter(db) {
   });
 
   // ---------- ANALYZE (βήμα 1: μόνο ανάγνωση, καμία εγγραφή) ----------
-  // Ελέγχει αν υπάρχουν διπλότυπα ΜΕΣΑ στο ίδιο αρχείο (ίδιο όνομα Τμήματος ή Μαθητή σε
-  // παραπάνω από μία γραμμή) και επιστρέφει λίστα για να διαλέξει ο χρήστης ποια κρατάει.
   router.post("/import/excel/analyze", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "Δεν εστάλη αρχείο." });
     const wb = XLSX.read(req.file.buffer, { type: "buffer" });
@@ -155,20 +169,20 @@ function makeExcelRouter(db) {
     });
   });
 
-  // ---------- COMMIT (βήμα 2: πραγματική εισαγωγή, με τις επιλογές duplicate-resolution) ----------
+  // ---------- COMMIT (βήμα 2: πραγματική εισαγωγή, μέσω batch writes) ----------
   router.post("/import/excel/commit", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "Δεν εστάλη αρχείο." });
 
     let resolutions = { classGroups: {}, students: {} };
     if (req.body.resolutions) {
-      try { resolutions = JSON.parse(req.body.resolutions); } catch { /* αγνόησε, χρησιμοποίησε defaults */ }
+      try { resolutions = JSON.parse(req.body.resolutions); } catch { /* defaults */ }
     }
 
     const wb = XLSX.read(req.file.buffer, { type: "buffer" });
     const report = { inserted: {}, updated: {}, rejected: [] };
 
-    // Γενικό upsert για απλές οντότητες: ΤΩΡΑ ελέγχει και ταίριασμα με ΥΠΑΡΧΟΝ όνομα στη
-    // βάση (όχι μόνο row.id), ώστε επαναλαμβανόμενα imports να ΜΗΝ δημιουργούν διπλότυπα.
+    // Γενικό upsert για απλές οντότητες. Χτίζει τη λίστα writes και τα στέλνει ΟΛΑ μαζί
+    // σε ένα batch, αντί να κάνει await ένα-ένα (πιο γρήγορο + ατομικό).
     async function upsertSheet(sheetName, collectionName, nameField, mapRow, dedupResolutions) {
       const sheet = wb.Sheets[sheetName];
       if (!sheet) return;
@@ -180,21 +194,26 @@ function makeExcelRouter(db) {
       const existing = await getAll(collectionName);
       const existingByName = new Map(existing.map((e) => [normalizeKey(e[nameField]), e.id]));
 
-      let inserted = 0, updated = 0;
       const col = db.collection(collectionName);
+      const writes = [];
+      let inserted = 0, updated = 0;
+
       for (const row of rows) {
         const data = mapRow(row);
         const nameVal = row[nameField];
         const existingId = row.id ? String(row.id) : (nameVal ? existingByName.get(normalizeKey(nameVal)) : undefined);
         if (existingId) {
-          await col.doc(existingId).set(data, { merge: true });
+          writes.push({ type: "set", ref: col.doc(existingId), data, options: { merge: true } });
           updated++;
         } else {
-          const ref = await col.add(data);
-          if (nameVal) existingByName.set(normalizeKey(nameVal), ref.id); // ώστε επόμενη γραμμή με ίδιο όνομα να μην ξαναδημιουργήσει
+          const newRef = col.doc(); // auto-id, χωρίς extra round-trip
+          writes.push({ type: "set", ref: newRef, data, options: {} });
+          if (nameVal) existingByName.set(normalizeKey(nameVal), newRef.id);
           inserted++;
         }
       }
+
+      await commitWritesInChunks(db, writes);
       report.inserted[sheetName] = inserted;
       report.updated[sheetName] = updated;
     }
@@ -204,18 +223,22 @@ function makeExcelRouter(db) {
     await upsertSheet("Teachers", "teachers", "fullName", (r) => ({ fullName: r.fullName, specialty: r.specialty || null }));
     await upsertSheet("Rooms", "rooms", "name", (r) => ({ name: r.name, capacity: Number(r.capacity) || null }));
 
-    // --- Assignments: ΠΛΗΡΗΣ ΑΝΤΙΚΑΤΑΣΤΑΣΗ ---
+    // --- Assignments: ΠΛΗΡΗΣ ΑΝΤΙΚΑΤΑΣΤΑΣΗ, ΑΤΟΜΙΚΑ ---
+    // Οι διαγραφές των παλιών ΚΑΙ οι εγγραφές των νέων μπαίνουν στο ΙΔΙΟ batch: είτε
+    // περνάνε όλες μαζί (πρόγραμμα ενημερωμένο), είτε καμία (πρόγραμμα όπως ήταν πριν).
+    // Έτσι δεν καταλήγει ποτέ σε "μισοτελειωμένη" κατάσταση.
     const assignSheet = wb.Sheets["Assignments"];
     if (assignSheet) {
-      const oldAssignmentsSnap = await db.collection("assignments").get();
-      await Promise.all(oldAssignmentsSnap.docs.map((d) => d.ref.delete()));
+      const assignmentsCol = db.collection("assignments");
+      const oldAssignmentsSnap = await assignmentsCol.get();
+      const writes = oldAssignmentsSnap.docs.map((d) => ({ type: "delete", ref: d.ref }));
       report.deleted = { Assignments: oldAssignmentsSnap.size };
 
       const rows = XLSX.utils.sheet_to_json(assignSheet);
       const [courses, classGroups, teachers, rooms] = await Promise.all([
         getAll("courses"), getAll("classGroups"), getAll("teachers"), getAll("rooms"),
       ]);
-      const existingAssignments = [];
+      const existingAssignments = []; // μόνο για conflict-check μέσα στο ίδιο αρχείο
       const findByName = (list, key, name) => list.find((x) => x[key] === name);
       let insertedCount = 0;
 
@@ -240,10 +263,14 @@ function makeExcelRouter(db) {
           continue;
         }
 
-        const ref = await db.collection("assignments").add({ ...candidate, courseId: course.id });
-        existingAssignments.push({ id: ref.id, ...candidate, courseId: course.id });
+        const newRef = assignmentsCol.doc();
+        const data = { ...candidate, courseId: course.id };
+        writes.push({ type: "set", ref: newRef, data, options: {} });
+        existingAssignments.push({ id: newRef.id, ...data });
         insertedCount++;
       }
+
+      await commitWritesInChunks(db, writes);
       report.inserted["Assignments"] = insertedCount;
     }
 
@@ -256,7 +283,9 @@ function makeExcelRouter(db) {
       const courses = await getAll("courses");
       const classGroups = await getAll("classGroups");
       const existingStudents = await getAll("students");
+      const studentsCol = db.collection("students");
 
+      const writes = [];
       let inserted = 0, updated = 0, unmatchedTotal = 0, unmatchedClassGroups = 0;
 
       for (const row of rows) {
@@ -294,16 +323,20 @@ function makeExcelRouter(db) {
         const existing = existingStudents.find((s) => normalizeKey(s.fullName) === normalizeKey(fullName));
         if (existing) {
           const mergedClassGroupIds = classGroupIds.length > 0 ? classGroupIds : (existing.classGroupIds || []);
-          await db.collection("students").doc(existing.id).set(
-            { ...studentData, classGroupIds: mergedClassGroupIds },
-            { merge: true }
-          );
+          writes.push({
+            type: "set",
+            ref: studentsCol.doc(existing.id),
+            data: { ...studentData, classGroupIds: mergedClassGroupIds },
+            options: { merge: true },
+          });
           updated++;
         } else {
-          await db.collection("students").add(studentData);
+          writes.push({ type: "set", ref: studentsCol.doc(), data: studentData, options: {} });
           inserted++;
         }
       }
+
+      await commitWritesInChunks(db, writes);
       report.inserted["Students"] = inserted;
       report.updated["Students"] = updated;
       report.studentsNeedingReview = unmatchedTotal;
