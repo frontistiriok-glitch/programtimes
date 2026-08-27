@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
+import { colorForTeacher } from "../teacherColor";
 
 const DAYS = [
   { key: "MONDAY", label: "Δευτέρα" },
@@ -41,7 +42,6 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
 
   const scopeName = scopeOptions.find((o) => o.id === scopeId)?.label || "";
 
-  // Όταν το scope είναι Τμήμα, δείχνουμε και τη λίστα μαθητών που ανήκουν σε αυτό.
   const classGroupStudents = useMemo(() => {
     if (scopeType !== "classgroup" || !scopeId) return [];
     return students.filter((s) => (s.classGroupIds || []).includes(scopeId));
@@ -64,6 +64,11 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
     });
   }, [assignments, scopeType, scopeId, students]);
 
+  const teachersInPreview = useMemo(() => {
+    const ids = new Set(filteredAssignments.map((a) => a.teacherId));
+    return teachers.filter((t) => ids.has(t.id));
+  }, [filteredAssignments, teachers]);
+
   if (!open) return null;
 
   const handlePrint = () => window.print();
@@ -72,52 +77,69 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
     if (!previewRef.current) return;
     setSharing(true);
     try {
-      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
-        import("jspdf"),
-        import("html2canvas"),
-      ]);
-      const canvas = await html2canvas(previewRef.current, { scale: 2, backgroundColor: "#ffffff" });
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const ratio = Math.min(pageW / canvas.width, pageH / canvas.height);
-      const w = canvas.width * ratio;
-      const h = canvas.height * ratio;
-      pdf.addImage(imgData, "PNG", (pageW - w) / 2, (pageH - h) / 2, w, h);
-      const blob = pdf.output("blob");
-      const fileName = `programma_${(scopeName || "all").replace(/\s+/g, "_")}.pdf`;
-      const file = new File([blob], fileName, { type: "application/pdf" });
+      let canvas;
+      try {
+        const [{ default: jsPDFmod }, html2canvasMod] = await Promise.all([
+          import("jspdf"),
+          import("html2canvas"),
+        ]);
+        const jsPDF = jsPDFmod;
+        const html2canvas = html2canvasMod.default;
+        canvas = await html2canvas(previewRef.current, {
+          scale: 2,
+          backgroundColor: "#ffffff",
+          useCORS: true,
+        });
+        const imgData = canvas.toDataURL("image/png");
+        const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+        const pageW = pdf.internal.pageSize.getWidth();
+        const pageH = pdf.internal.pageSize.getHeight();
+        const ratio = Math.min(pageW / canvas.width, pageH / canvas.height);
+        const w = canvas.width * ratio;
+        const h = canvas.height * ratio;
+        pdf.addImage(imgData, "PNG", (pageW - w) / 2, (pageH - h) / 2, w, h);
+        const blob = pdf.output("blob");
+        const fileName = `programma_${(scopeName || "all").replace(/\s+/g, "_")}.pdf`;
+        const file = new File([blob], fileName, { type: "application/pdf" });
 
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "Πρόγραμμα Φροντιστηρίου", text: scopeName });
-      } else {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        a.click();
-        URL.revokeObjectURL(url);
-        alert("Η άμεση κοινή χρήση (π.χ. Viber) δεν υποστηρίζεται σε αυτόν τον browser/συσκευή — το PDF κατέβηκε στη συσκευή σου, μπορείς να το επισυνάψεις χειροκίνητα.");
+        try {
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: "Πρόγραμμα Φροντιστηρίου", text: scopeName });
+          } else {
+            throw new Error("share-not-supported");
+          }
+        } catch (shareErr) {
+          // Είτε δεν υποστηρίζεται είτε ο χρήστης ακύρωσε το share sheet -> έχουμε ήδη το PDF, το κατεβάζουμε.
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = fileName;
+          a.click();
+          URL.revokeObjectURL(url);
+          if (shareErr.message === "share-not-supported") {
+            alert("Η άμεση κοινή χρήση (π.χ. Viber) δεν υποστηρίζεται σε αυτόν τον browser/συσκευή — το PDF κατέβηκε, μπορείς να το επισυνάψεις χειροκίνητα.");
+          }
+        }
+      } catch (genErr) {
+        console.error("Σφάλμα δημιουργίας PDF:", genErr);
+        alert("Προέκυψε σφάλμα κατά τη δημιουργία του PDF: " + (genErr?.message || "άγνωστο σφάλμα") + "\nΔοκίμασε το κουμπί 'Εκτύπωση' ως εναλλακτική.");
       }
-    } catch (err) {
-      alert("Προέκυψε σφάλμα κατά τη δημιουργία του PDF.");
     } finally {
       setSharing(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 print:static print:bg-transparent print:p-0">
-      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none">
-        {/* Controls - κρύβονται στην εκτύπωση */}
-        <div className="flex flex-wrap items-end gap-3 border-b border-line px-5 py-4 print:hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-0 sm:p-4 print:static print:bg-transparent print:p-0">
+      <div className="flex h-full w-full max-w-4xl flex-col overflow-hidden bg-white shadow-xl sm:h-auto sm:max-h-[92vh] sm:rounded-lg print:h-auto print:max-h-none print:max-w-none print:rounded-none print:shadow-none">
+        {/* Controls - κρύβονται στην εκτύπωση. Στοιχίζονται κάθετα σε κινητό. */}
+        <div className="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:flex-wrap sm:items-end sm:px-5 sm:py-4 print:hidden">
           <label className="flex flex-col gap-1 text-xs font-medium text-slate">
             Προβολή ανά
             <select
               value={scopeType}
               onChange={(e) => { setScopeType(e.target.value); setScopeId(""); }}
-              className="rounded-md border border-line px-2 py-1.5 text-sm"
+              className="w-full rounded-md border border-line px-2 py-1.5 text-sm sm:w-auto"
             >
               {SCOPE_TYPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
@@ -127,7 +149,7 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
             <select
               value={scopeId}
               onChange={(e) => setScopeId(e.target.value)}
-              className="w-56 rounded-md border border-line px-2 py-1.5 text-sm"
+              className="w-full rounded-md border border-line px-2 py-1.5 text-sm sm:w-56"
             >
               <option value="">Επίλεξε...</option>
               {scopeOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -138,20 +160,20 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
             <div className="flex overflow-hidden rounded-md border border-line">
               <button
                 onClick={() => setFormat("grid")}
-                className={`px-3 py-1.5 text-sm ${format === "grid" ? "bg-accent text-white" : "bg-white text-ink"}`}
+                className={`flex-1 px-3 py-1.5 text-sm ${format === "grid" ? "bg-accent text-white" : "bg-white text-ink"}`}
               >
                 Πλέγμα
               </button>
               <button
                 onClick={() => setFormat("list")}
-                className={`px-3 py-1.5 text-sm ${format === "list" ? "bg-accent text-white" : "bg-white text-ink"}`}
+                className={`flex-1 px-3 py-1.5 text-sm ${format === "list" ? "bg-accent text-white" : "bg-white text-ink"}`}
               >
                 Λίστα
               </button>
             </div>
           </div>
 
-          <div className="ml-auto flex gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:ml-auto sm:flex sm:flex-row">
             <button onClick={handlePrint} disabled={!scopeId} className="rounded-md border border-line px-3 py-1.5 text-sm font-medium text-ink hover:bg-paper disabled:opacity-40">
               Εκτύπωση
             </button>
@@ -165,18 +187,18 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
         </div>
 
         {/* Preview / print area */}
-        <div className="overflow-auto p-5 print:overflow-visible print:p-8">
+        <div className="flex-1 overflow-auto p-3 sm:p-5 print:overflow-visible print:p-8">
           <div ref={previewRef} className="print-area mx-auto max-w-3xl bg-white">
             <div className="mb-4 flex items-end justify-between border-b-2 border-ink pb-3">
               <div>
-                <div className="font-display text-xl font-semibold text-ink">ΦΡΟΝΤΙΣΤΗΡΙΟ ΚΟΥΤΣΟΥΚΟΣ</div>
+                <div className="font-display text-lg font-semibold text-ink sm:text-xl">ΦΡΟΝΤΙΣΤΗΡΙΟ ΚΟΥΤΣΟΥΚΟΣ</div>
                 <div className="text-sm text-slate">2026-2027</div>
               </div>
               <div className="text-right">
                 <div className="text-xs uppercase tracking-wide text-slate">
                   {SCOPE_TYPES.find((s) => s.key === scopeType)?.label}
                 </div>
-                <div className="font-display text-lg font-semibold text-ink">{scopeName || "—"}</div>
+                <div className="font-display text-base font-semibold text-ink sm:text-lg">{scopeName || "—"}</div>
               </div>
             </div>
 
@@ -192,6 +214,18 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
                 {classGroupStudents.length > 0
                   ? classGroupStudents.map((s) => s.fullName).join(", ")
                   : "— κανένας μαθητής ανατεθειμένος ακόμα —"}
+              </div>
+            )}
+
+            {scopeId && format === "grid" && teachersInPreview.length > 1 && (
+              <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-slate">
+                <span className="font-medium text-ink">Καθηγητές:</span>
+                {teachersInPreview.map((t) => (
+                  <span key={t.id} className="flex items-center gap-1.5">
+                    <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: colorForTeacher(t) }} />
+                    {t.fullName}
+                  </span>
+                ))}
               </div>
             )}
 
@@ -235,9 +269,8 @@ export default function PrintPreviewModal({ open, onClose, assignments, teachers
   );
 }
 
-// Ελαφριά, καθαρά τυπωμένη εκδοχή του εβδομαδιαίου πλέγματος (χωρίς drag&drop/interactivity -
-// άχρηστα σε χαρτί) ειδικά για το preview/εκτύπωση. Κάθε ανάθεση "πιάνει" τόσες γραμμές
-// (μισές ώρες) όση είναι η πραγματική διάρκειά της, μέσω HTML rowSpan.
+// Πλέγμα εκτύπωσης/preview με την ΙΔΙΑ οπτική γλώσσα με το κανονικό πρόγραμμα στην οθόνη:
+// έγχρωμες κάρτες ανά καθηγητή (colorForTeacher), rowSpan ανάλογα με τη διάρκεια.
 function SimplePrintGrid({ assignments }) {
   const HOURS = Array.from({ length: SLOT_COUNT }, (_, i) => {
     const total = GRID_START_MINUTES + i * SLOT_MINUTES;
@@ -255,9 +288,6 @@ function SimplePrintGrid({ assignments }) {
     return Math.max(1, span);
   }
 
-  // Για κάθε ημέρα, φτιάχνει έναν χάρτη slotIndex -> "covered" (καλύπτεται από rowSpan
-  // προηγούμενης γραμμής, δεν σχεδιάζεται <td>) ή { items, span } (εδώ ξεκινάει το κελί).
-  // Ταυτόχρονες αναθέσεις με ΑΚΡΙΒΩΣ την ίδια ώρα έναρξης εμφανίζονται μαζί στο ίδιο κελί.
   const layoutByDay = useMemo(() => {
     const result = {};
     for (const day of DAYS) {
@@ -284,12 +314,12 @@ function SimplePrintGrid({ assignments }) {
   }, [assignments]);
 
   return (
-    <table className="w-full border-collapse text-[11px]">
+    <table className="w-full border-collapse text-[10px] sm:text-[11px]">
       <thead>
         <tr>
-          <th className="w-14 border border-line bg-paper p-1"></th>
+          <th className="w-12 border border-line bg-paper p-1 sm:w-14"></th>
           {DAYS.map((d) => (
-            <th key={d.key} className="border border-line bg-paper p-1 font-display text-xs font-semibold">
+            <th key={d.key} className="border border-line bg-paper p-1 font-display text-[10px] font-semibold sm:text-xs">
               {d.label}
             </th>
           ))}
@@ -301,17 +331,24 @@ function SimplePrintGrid({ assignments }) {
             <td className="border border-line p-1 text-right text-slate">{time}</td>
             {DAYS.map((d) => {
               const cell = layoutByDay[d.key][rowIdx];
-              if (cell === "covered") return null; // καλύπτεται ήδη από rowSpan παραπάνω
+              if (cell === "covered") return null;
               if (cell && cell.items) {
                 return (
-                  <td key={d.key + time} rowSpan={cell.span} className="border border-line p-1 align-top">
-                    {cell.items.map((a) => (
-                      <div key={a.id} className="mb-1 rounded border border-ink/30 bg-paper/60 p-1">
-                        <div className="font-semibold">{a.course?.title}</div>
-                        <div>{a.classGroup?.name} · {a.teacher?.fullName}</div>
-                        <div>{a.room?.name}</div>
-                      </div>
-                    ))}
+                  <td key={d.key + time} rowSpan={cell.span} className="border border-line p-0.5 align-top sm:p-1">
+                    {cell.items.map((a) => {
+                      const color = colorForTeacher(a.teacher);
+                      return (
+                        <div
+                          key={a.id}
+                          className="mb-1 rounded border px-1 py-0.5"
+                          style={{ backgroundColor: color + "22", borderColor: color }}
+                        >
+                          <div className="font-semibold text-ink">{a.course?.title}</div>
+                          <div className="text-slate">{a.classGroup?.name} · {a.teacher?.fullName}</div>
+                          <div className="text-slate">{a.room?.name}</div>
+                        </div>
+                      );
+                    })}
                   </td>
                 );
               }

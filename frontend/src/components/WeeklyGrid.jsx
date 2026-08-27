@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
+import { colorForTeacher } from "../teacherColor";
 
 const DAYS = [
   { key: "MONDAY", label: "Δευτέρα" },
@@ -34,20 +35,9 @@ function durationRows(start, end) {
   return Math.round(((h2 * 60 + m2) - (h1 * 60 + m1)) / 30);
 }
 
-const FALLBACK_PALETTE = ["#2F6F4E", "#B4472B", "#4C6EF5", "#AE3EC9", "#E8590C", "#0CA678", "#F08C00", "#1971C2"];
-
-function colorForTeacher(teacher) {
-  if (teacher?.color) return teacher.color;
-  if (!teacher?.id) return "#2F6F4E";
-  let hash = 0;
-  for (const ch of teacher.id) hash = (hash * 31 + ch.charCodeAt(0)) % FALLBACK_PALETTE.length;
-  return FALLBACK_PALETTE[hash];
-}
-
 /**
  * Τοποθετεί τις αναθέσεις μιας ημέρας σε "λωρίδες" (lanes) ώστε όσες συμπίπτουν χρονικά
- * να εμφανίζονται δίπλα-δίπλα (πλάι-πλάι) αντί να επικαλύπτονται οπτικά.
- * Κλασικός αλγόριθμος interval-graph coloring πάνω σε συνδεδεμένα "clusters" επικάλυψης.
+ * να εμφανίζονται δίπλα-δίπλα αντί να επικαλύπτονται οπτικά.
  */
 function layoutLanesForDay(dayAssignments) {
   const sorted = [...dayAssignments].sort((a, b) => toMinutes(a.startTime) - toMinutes(b.startTime));
@@ -88,27 +78,84 @@ function layoutLanesForDay(dayAssignments) {
   return result;
 }
 
-export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardClick, onDrop }) {
+export default function WeeklyGrid({ assignments, allAssignments, teachers, students, onCellClick, onCardClick, onDrop }) {
+  const [draggingId, setDraggingId] = useState(null);
+
   const handleDragStart = (e, assignment) => {
     e.dataTransfer.setData("assignmentId", String(assignment.id));
+    setDraggingId(assignment.id);
   };
+  const handleDragEnd = () => setDraggingId(null);
 
   const handleDragOver = (e) => e.preventDefault();
 
   const handleDrop = (e, day, time) => {
     e.preventDefault();
-    const assignmentId = e.dataTransfer.getData("assignmentId"); // string (Firestore doc id) - ΟΧΙ Number()
+    const assignmentId = e.dataTransfer.getData("assignmentId"); // string (Firestore doc id)
     if (assignmentId) onDrop(assignmentId, day, time);
+    setDraggingId(null);
   };
 
   const teachersInView = teachers.filter((t) => assignments.some((a) => a.teacherId === t.id));
 
-  // Layout ανά ημέρα, ώστε ταυτόχρονες αναθέσεις να παίρνουν lane/lanes και να χωράνε δίπλα-δίπλα.
   const laidOutByDay = {};
   for (const day of DAYS) {
     const dayAssignments = assignments.filter((a) => a.day === day.key);
     laidOutByDay[day.key] = layoutLanesForDay(dayAssignments);
   }
+
+  // --- Live έλεγχος "πού μπορεί/δεν μπορεί να μπει" όσο σέρνεις μια κάρτα ---
+  // Κόκκινο αν: (α) σύγκρουση με άλλη ανάθεση ίδιου καθηγητή/αίθουσας/τμήματος, ή
+  // (β) κάποιος μαθητής του τμήματος έχει δηλώσει μη-διαθεσιμότητα εκείνη την ώρα.
+  const draggingAssignment = draggingId ? assignments.find((a) => a.id === draggingId) : null;
+
+  const validityMatrix = useMemo(() => {
+    if (!draggingAssignment) return null;
+    const conflictSource = allAssignments || assignments;
+    const duration = toMinutes(draggingAssignment.endTime) - toMinutes(draggingAssignment.startTime);
+    const enrolledStudents = (students || []).filter((s) =>
+      (s.classGroupIds || []).includes(draggingAssignment.classGroupId)
+    );
+
+    const matrix = {};
+    for (const day of DAYS) {
+      matrix[day.key] = {};
+      for (const time of HOURS) {
+        const start = toMinutes(time);
+        const end = start + duration;
+        let blocked = false;
+
+        for (const other of conflictSource) {
+          if (other.id === draggingAssignment.id) continue;
+          if (other.day !== day.key) continue;
+          const oS = toMinutes(other.startTime), oE = toMinutes(other.endTime);
+          if (start >= oE || oS >= end) continue; // δεν επικαλύπτονται
+          if (
+            other.teacherId === draggingAssignment.teacherId ||
+            other.roomId === draggingAssignment.roomId ||
+            other.classGroupId === draggingAssignment.classGroupId
+          ) {
+            blocked = true;
+            break;
+          }
+        }
+
+        if (!blocked) {
+          for (const student of enrolledStudents) {
+            const clash = (student.unavailableSlots || []).some((slot) => {
+              if (slot.day !== day.key) return false;
+              const slotStart = toMinutes(slot.time);
+              return start < slotStart + 30 && slotStart < end;
+            });
+            if (clash) { blocked = true; break; }
+          }
+        }
+
+        matrix[day.key][time] = !blocked;
+      }
+    }
+    return matrix;
+  }, [draggingAssignment, assignments, allAssignments, students]);
 
   return (
     <div className="space-y-2">
@@ -123,6 +170,14 @@ export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardC
           ))}
         </div>
       )}
+
+      {validityMatrix && (
+        <div className="flex items-center gap-4 rounded-lg border border-line bg-white px-3 py-2 text-xs text-slate">
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-emerald-400" /> Διαθέσιμο</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-400" /> Μη διαθέσιμο (σύγκρουση ή μαθητής εκτός ωραρίου)</span>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-lg border border-line bg-white">
         <div
           className="grid min-w-[860px]"
@@ -139,7 +194,7 @@ export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardC
             </div>
           ))}
 
-          {/* Time gutter */}
+          {/* Time gutter + κελιά (με live έγχρωμο validity όσο γίνεται drag) */}
           {HOURS.map((time, rowIdx) => (
             <React.Fragment key={time}>
               <div
@@ -148,20 +203,26 @@ export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardC
               >
                 {time}
               </div>
-              {DAYS.map((d) => (
-                <div
-                  key={d.key + time}
-                  onDragOver={handleDragOver}
-                  onDrop={(e) => handleDrop(e, d.key, time)}
-                  onClick={() => onCellClick(d.key, time)}
-                  className="relative h-10 cursor-pointer border-b border-l border-line hover:bg-accentSoft/40"
-                  style={{ gridRow: rowIdx + 2, gridColumn: DAYS.indexOf(d) + 2 }}
-                />
-              ))}
+              {DAYS.map((d) => {
+                const status = validityMatrix ? (validityMatrix[d.key][time] ? "valid" : "invalid") : null;
+                return (
+                  <div
+                    key={d.key + time}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDrop(e, d.key, time)}
+                    onClick={() => onCellClick(d.key, time)}
+                    className={`relative h-10 cursor-pointer border-b border-l-4 border-line hover:bg-accentSoft/40 ${
+                      status === "valid" ? "border-l-emerald-400 bg-emerald-50" :
+                      status === "invalid" ? "border-l-red-400 bg-red-50" : "border-l-line"
+                    }`}
+                    style={{ gridRow: rowIdx + 2, gridColumn: DAYS.indexOf(d) + 2 }}
+                  />
+                );
+              })}
             </React.Fragment>
           ))}
 
-          {/* Assignment cards: κάθε grid cell (ημέρα) μπορεί να περιέχει πολλαπλές κάρτες σε lanes */}
+          {/* Κάρτες αναθέσεων */}
           {DAYS.map((day, dayIndex) =>
             laidOutByDay[day.key].map(({ assignment: a, lane, lanes }) => {
               const rowStart = timeToRow(a.startTime) + 1;
@@ -173,6 +234,7 @@ export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardC
                   key={a.id}
                   draggable
                   onDragStart={(e) => handleDragStart(e, a)}
+                  onDragEnd={handleDragEnd}
                   onClick={(e) => {
                     e.stopPropagation();
                     onCardClick(a);
@@ -186,6 +248,7 @@ export default function WeeklyGrid({ assignments, teachers, onCellClick, onCardC
                     marginLeft: `calc(${widthPct}% * ${lane})`,
                     backgroundColor: teacherColor + "22",
                     borderColor: teacherColor,
+                    opacity: draggingId === a.id ? 0.4 : 1,
                   }}
                 >
                   <div className="truncate font-semibold text-ink">{a.course?.title}</div>
