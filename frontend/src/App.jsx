@@ -211,7 +211,9 @@ function AppContent({ userEmail }) {
 
             <WeeklyGrid
               assignments={filteredAssignments}
+              allAssignments={assignments}
               teachers={teachers}
+              students={students}
               onCellClick={openNewCell}
               onCardClick={openExisting}
               onDrop={handleDrop}
